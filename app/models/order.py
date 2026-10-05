@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import ForeignKey, String , Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
@@ -27,4 +27,8 @@ class Order(Base):
     items: Mapped[list["OrderItem"]] = relationship(
         back_populates="order",
         cascade="all, delete-orphan"
+    )
+    
+    __table_args__ = (
+        Index("ix_orders_user_status", "user_id", "status"),
     )

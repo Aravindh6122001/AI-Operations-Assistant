@@ -1,0 +1,18 @@
+                         FastAPI
+                            │
+              ┌─────────────┼──────────────┐
+              ▼             ▼              ▼
+           Auth API      User API       Order API
+              │             │              │
+              ▼             ▼              ▼
+         Auth Service   User Service   Order Service
+              │             │              │
+              │             ▼              ▼
+              │        User Repository  Order Repository
+              │             │              │
+              └─────────────┼──────────────┘
+                            ▼
+                       SQLAlchemy
+                            │
+                            ▼
+                       PostgreSQL

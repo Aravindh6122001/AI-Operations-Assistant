@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from typing import Optional
 
 
 class OrderItemCreate(BaseModel):
@@ -30,3 +31,9 @@ class OrderResponse(BaseModel):
     model_config = {
         "from_attributes": True
     }
+class OrderListResponse(BaseModel):
+    items: list[OrderResponse]
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
