@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # database
 from sqlalchemy import text
-from app.db.database import Base, engine
+# from app.db.database import Base, engine
 
 # Models must be imported before create_all()
 from app.models.user import User
@@ -17,6 +17,11 @@ from app.api.auth import router as auth_router
 from app.api.users import router as users_router
 from app.api.orders import router as orders_router
 from app.api.product import router as products_router
+from app.api.conversations import router as conversations_router
+
+from app.db.mongodb import ensure_mongodb_indexes
+from app.db.database import engine
+
 
 
 app = FastAPI(
@@ -25,13 +30,14 @@ app = FastAPI(
 
 
 # Temporary until Alembic is introduced in Phase 3
-Base.metadata.create_all(bind=engine)
+# Base.metadata.create_all(bind=engine)
 
 
 app.include_router(auth_router)
 app.include_router(users_router, prefix="/api/v1")
 app.include_router(orders_router)
 app.include_router(products_router)
+app.include_router(conversations_router)
 
 
 
@@ -66,7 +72,9 @@ def db_health():
             "database": result.scalar()
         }
   
-
+@app.on_event("startup")
+def initialize_mongodb():
+    ensure_mongodb_indexes()
 
 @app.exception_handler(Exception)
 async def global_exception_handler(

@@ -1,279 +1,284 @@
 AI BACKEND PLATFORM — QUICK PROJECT NOTES
-============================================
 
 COMMANDS TO KNOW FIRST
-----------------------
 
-Virtual environment
-- Create: python3.12 -m venv venv
-- Activate: source venv/bin/activate
-- Deactivate: deactivate
+Virtual environment - Create: python3.12 -m venv venv - Activate: source
+venv/bin/activate - Deactivate: deactivate
 
-Python / packages
-- Check Python: python --version
-- Install package: pip install <package>
-- Install dependencies: pip install -r requirements.txt
-- Save dependencies: pip freeze > requirements.txt
+Python / packages - Check Python: python –version - Install package: pip
+install  - Install dependencies: pip install -r requirements.txt - Save
+dependencies: pip freeze > requirements.txt
 
-Run FastAPI
-- Start server: uvicorn app.main:app --reload
-- Start on a specific port: uvicorn app.main:app --reload --port 8000
+Run FastAPI - Start server: uvicorn app.main:app –reload - Start on a
+specific port: uvicorn app.main:app –reload –port 8000 - Swagger:
+http://127.0.0.1:8000/docs
 
-Git
-- Status: git status
-- Add: git add .
-- Commit: git commit -m "message"
-- Push: git push origin main
-- Log: git log --oneline
+Git - Status: git status - Inspect staged changes: git diff –cached -
+Add: git add . - Commit: git commit -m “message” - Push: git push origin
+main - Log: git log –oneline - Confirm .env is not tracked: git ls-files
+.env - Check ignored files: git status –short –ignored
 
-PostgreSQL / psql
-- Connect: psql ai_backend
-- List tables: \dt
-- Describe table: \d table_name
-- List indexes: \di
-- Query: SELECT * FROM table_name;
-- Explain query: EXPLAIN ANALYZE <query>;
+PostgreSQL / psql - Connect: psql ai_backend - List tables:  - Describe
+table: able_name - List indexes:  - Query: SELECT * FROM table_name; -
+Explain query: EXPLAIN ANALYZE ;
 
-Alembic
-- Initialize: alembic init alembic
-- Current migration: alembic current
-- Create migration: alembic revision --autogenerate -m "message"
-- Apply migrations: alembic upgrade head
-- Roll back one migration: alembic downgrade -1
-- Migration history: alembic history
-- Mark current DB at migration: alembic stamp head
+Alembic - Current migration: alembic current - Create migration: alembic
+revision –autogenerate -m “message” - Apply migrations: alembic upgrade
+head - Roll back one migration: alembic downgrade -1 - Migration
+history: alembic history - Mark current DB at migration: alembic stamp
+head
 
+MongoDB / mongosh - Start service on macOS: brew services start
+mongodb-community - Open shell: mongosh - Select database: use
+ai_backend - List collections: show collections - Inspect indexes:
+db.conversations.getIndexes() - Filter: db.conversations.find({ user_id:
+4 }) - Filter + sort + execution plan: db.conversations.find({ user_id:
+4 }).sort({ updated_at: -1, _id: -1 }).explain(“executionStats”) -
+Create/read/update/delete checks should use actual 24-character ObjectId
+values.
+
+Redis - Start service on macOS: brew services start redis - Ping:
+redis-cli ping - Open CLI: redis-cli - Store/read: SET demo “hello” /
+GET demo - Set expiry: SET demo “hello” EX 60 - Check expiry: TTL demo -
+Increment: INCR request_count - Delete: DEL demo
+
+GIT SAFETY BEFORE PUSH
+
+-   .env and venv are ignored by .gitignore in the reviewed snapshot.
+-   Confirm .env is not tracked: git ls-files .env
+-   Review both staged and unstaged changes: git diff –cached; git diff
+-   Do not commit secrets, local databases, virtual environments, or
+    generated cache files.
+-   Fix the known code issues listed at the end of this note before
+    pushing.
 
 PROJECT QUICK MAP
------------------
 
-app/main.py
-- FastAPI application
-- Router registration
-- CORS
-- /health
-- /db-health
-- Global exception handler
-- DO NOT use Base.metadata.create_all() once Alembic owns schema changes
+app/main.py - FastAPI application, router registration, CORS, /health,
+/db-health, global exception handler - MongoDB index initialization on
+startup - Base.metadata.create_all() remains commented out; Alembic
+should own schema changes - NOTE: /db-health currently references
+engine, but the engine import is commented out in the reviewed snapshot
 
-app/api/
-- HTTP endpoints / routes
-- auth.py -> login/auth endpoints
-- users.py -> user endpoints
-- orders.py -> order endpoints
-- product.py -> product endpoints
+app/api/ - HTTP endpoints / routes - auth.py -> login/auth endpoints -
+users.py -> user endpoints - orders.py -> order endpoints - product.py
+-> product endpoints - conversations.py -> MongoDB conversation CRUD,
+message routes, message-role statistics
 
-app/services/
-- Business logic
-- user_service.py -> user operations
-- order_service.py -> order creation + transaction logic
-- product_service.py -> product operations
-- auth_service.py -> authentication flow
+app/services/ - Business logic - user_service.py -> user operations -
+order_service.py -> order creation + transaction logic -
+product_service.py -> product operations - auth_service.py ->
+authentication flow - conversation_service.py -> conversation ownership
+checks, CRUD orchestration, message handling, aggregation call
 
-app/repositories/
-- Database access/query layer
-- user_repository.py -> User queries
-- order_repository.py -> Order queries
-- product_repository.py -> Product queries
+app/repositories/ - Database access/query layer - user_repository.py ->
+User queries - order_repository.py -> Order queries -
+product_repository.py -> Product queries - coversation_repository.py ->
+MongoDB conversation queries, messages, indexes’ query usage,
+aggregation NOTE: filename is currently misspelled as
+“coversation_repository.py”; imports use that filename.
 
-app/models/
-- SQLAlchemy database tables/models
-- user.py -> users table
-- order.py -> orders table + composite index
-- order_item.py -> order_items table + foreign keys/indexes
-- product.py -> products table + price/stock constraints
+app/models/ - SQLAlchemy database tables/models - user.py -> users
+table - order.py -> orders table + composite index - order_item.py ->
+order_items table + foreign keys/indexes - product.py -> products
+table + price/stock constraints
 
-app/schemas/
-- Pydantic request/response models
-- users.py -> user create/update/response
-- order.py -> order + order item request/response
-- products.py -> product request/response
-- auth.py -> authentication schemas
+app/schemas/ - Pydantic request/response models - users.py -> user
+create/update/response - order.py -> order + order item
+request/response - products.py -> product request/response - auth.py ->
+authentication schemas - conversation.py -> conversation and message
+request/response validation
 
-app/db/
-- database.py -> SQLAlchemy engine + Base + connection/pool configuration
-- session.py -> SessionLocal/get_db dependency
+app/db/ - database.py -> SQLAlchemy engine + Base + connection/pool
+configuration - session.py -> SessionLocal/get_db dependency -
+mongodb.py -> MongoClient, ai_backend database, conversations
+collection, compound index setup
 
-app/core/
-- config.py -> .env/application settings
-- security.py -> password hashing + JWT access/refresh tokens
-- authentication.py -> authentication dependency
-- authorization.py -> authorization/role checks
+app/core/ - config.py -> .env/application settings - security.py ->
+password hashing + JWT access/refresh tokens - authentication.py ->
+authentication dependency - authorization.py -> authorization/role
+checks
 
-.env
-- DATABASE_URL
-- JWT_SECRET_KEY
-- JWT_ALGORITHM
-- ACCESS_TOKEN_EXPIRE_MINUTES
-- REFRESH_TOKEN_EXPIRE_DAYS
+.env (local only; do not commit) - DATABASE_URL - MONGODB_URL -
+MONGODB_DATABASE - JWT_SECRET_KEY - JWT_ALGORITHM -
+ACCESS_TOKEN_EXPIRE_MINUTES - REFRESH_TOKEN_EXPIRE_DAYS - REDIS_URL is
+not present in the reviewed snapshot yet
 
+POSTGRESQL / SQL — TOPICS COVERED
 
-POSTGRESQL / SQL — WHAT WE COVERED
------------------------------------
+Tables / relationships - SQLAlchemy table definitions -> app/models/ -
+FK relationships -> order.py, order_item.py, user.py - ORM
+relationship() -> app/models/order.py and user.py - Order -> OrderItem
+one-to-many -> app/models/order.py + order_item.py
 
-Tables / relationships
-- SQLAlchemy table definitions -> app/models/
-- FK relationships -> order.py, order_item.py, user.py
-- ORM relationship() -> app/models/order.py and user.py
-- Order -> OrderItem one-to-many -> app/models/order.py + order_item.py
+CRUD and transactions - Create/read/update/delete -> app/repositories/ +
+app/services/ + app/api/ - Transaction boundary / commit / rollback ->
+app/services/order_service.py - Order creation + stock update happen in
+one transaction - db.flush(), db.commit(), db.rollback(), db.refresh()
+-> order_service.py
 
-CRUD
-- Create/read/update/delete -> app/repositories/ + app/services/ + app/api/
+Concurrency / row locking - SELECT FOR UPDATE ->
+app/services/order_service.py - SQLAlchemy: .with_for_update() - Used
+when updating scarce stock concurrently
 
-Transactions
-- Transaction boundary / commit / rollback -> app/services/order_service.py
-- Order creation + stock update happen in one transaction
-- db.flush(), db.commit(), db.rollback(), db.refresh() -> order_service.py
+Relationships / eager loading - relationship() -> app/models/order.py -
+selectinload() -> repository/service query where relationship loading is
+needed - Avoid N+1 queries by loading related rows efficiently
 
-Concurrency / row locking
-- SELECT FOR UPDATE -> app/services/order_service.py
-- SQLAlchemy: .with_for_update()
-- Used when updating scarce stock concurrently
+Indexes and query optimization - Single-column index -> app/models/
+(mapped_column(index=True)) - Product name index ->
+app/models/product.py - Order user/status indexes ->
+app/models/order.py - OrderItem FK indexes -> app/models/order_item.py -
+Composite index -> app/models/order.py: Index(“ix_orders_user_status”,
+“user_id”, “status”) - Manual SQL index: CREATE INDEX … - EXPLAIN
+ANALYZE -> PostgreSQL / psql - PostgreSQL query planner chooses the
+execution plan; inspect Seq Scan / Index Scan
 
-Relationships / eager loading
-- relationship() -> app/models/order.py
-- selectinload() -> repository/service query where relationship loading is needed
-- Avoid N+1 queries by loading related rows efficiently
+Filtering, sorting, pagination - SQLAlchemy .filter(…) ->
+app/repositories/ - Query parameters -> app/api/ + service/repository
+layer - SQLAlchemy .order_by(…) -> repository query;
+e.g. Order.id.desc() - limit()/offset() -> repository/service query -
+API query parameters -> app/api/
 
-Indexes
-- Single-column index -> app/models/ (mapped_column(index=True))
-- Product name index -> app/models/product.py
-- Order user/status indexes -> app/models/order.py
-- OrderItem FK indexes -> app/models/order_item.py
-- Composite index -> app/models/order.py
-  Index("ix_orders_user_status", "user_id", "status")
-- Manual SQL index:
-  CREATE INDEX ...
+Aggregation and data integrity - SQL COUNT/SUM/AVG/GROUP BY ->
+PostgreSQL queries - SQLAlchemy aggregation functions -> repository
+layer - Product price/stock CHECK constraints -> app/models/product.py -
+Foreign keys -> app/models/ - unique/indexed user email ->
+app/models/user.py - nullable/default settings -> models
 
-Query optimization
-- EXPLAIN ANALYZE -> PostgreSQL / psql
-- SQLAlchemy builds the query; PostgreSQL query planner chooses the execution plan
-- Look for Seq Scan / Index Scan in EXPLAIN ANALYZE output
+Connection pooling and migrations - SQLAlchemy engine ->
+app/db/database.py - pool_size / max_overflow / pool_pre_ping /
+pool_recycle -> database.py - Session lifecycle -> app/db/session.py -
+Alembic config -> alembic.ini and alembic/env.py - Migration files ->
+alembic/versions/ - Model metadata imports -> alembic/env.py -
+Autogenerate -> alembic revision –autogenerate - Apply -> alembic
+upgrade head
 
-Filtering
-- SQLAlchemy .filter(...) -> app/repositories/
-- Query parameters -> app/api/ + service/repository layer
+AUTH / SECURITY — TOPICS COVERED
 
-Sorting
-- SQLAlchemy .order_by(...) -> repository query
-- Example: Order.id.desc()
+-   Argon2 password hashing -> app/core/security.py
+-   Access/refresh JWT creation -> app/core/security.py
+-   JWT settings -> app/core/config.py
+-   Login/auth flow -> app/api/auth.py + app/services/auth_service.py
+-   Authentication dependency -> app/core/authentication.py
+-   Authorization/role checks -> app/core/authorization.py
+-   Pydantic request validation -> app/schemas/
+-   FastAPI Depends(…) -> app/api/ and app/core/
 
-Pagination
-- limit()/offset() -> repository/service query
-- API query parameters -> app/api/
+MONGODB — CURRENT IMPLEMENTATION
 
-Aggregation
-- SQL COUNT/SUM/AVG/GROUP BY -> PostgreSQL queries
-- SQLAlchemy aggregation functions -> repository layer
-- No dedicated aggregation endpoint has been implemented yet
+Connection / collection - PyMongo dependency is present in
+requirements.txt. - MongoClient, database, and conversations collection
+-> app/db/mongodb.py - Settings -> app/core/config.py and local .env -
+Compound index created at startup -> app/db/mongodb.py + app/main.py -
+Current index: user_id ascending, updated_at descending, _id
+descending - Index supports user-specific conversation listing and the
+matching sort.
 
-Constraints / data integrity
-- Product price/stock CHECK constraints -> app/models/product.py
-- Foreign keys -> app/models/
-- unique/indexed user email -> app/models/user.py
-- nullable/default settings -> models
+Document design - Conversation document contains user_id, title,
+messages array, created_at, updated_at. - Messages are embedded
+documents containing role, content, created_at. - Pydantic message
+validation -> app/schemas/conversation.py - BSON ObjectId is converted
+to string for conversation API responses ->
+app/repositories/coversation_repository.py
 
-Connection pooling
-- SQLAlchemy engine -> app/db/database.py
-- pool_size / max_overflow / pool_pre_ping / pool_recycle -> database.py
-- Session lifecycle -> app/db/session.py
+Conversation endpoints - POST /api/v1/conversations/ -> create - GET
+/api/v1/conversations/ -> list with limit/offset - GET
+/api/v1/conversations/{conversation_id} -> retrieve - PATCH
+/api/v1/conversations/{conversation_id} -> update title - DELETE
+/api/v1/conversations/{conversation_id} -> delete - POST
+/api/v1/conversations/{conversation_id}/messages -> append message - GET
+/api/v1/conversations/{conversation_id}/messages -> list messages - GET
+/api/v1/conversations/stats/messages-by-role -> aggregation endpoint -
+Router -> app/api/conversations.py - Business logic / ownership checks
+-> app/services/conversation_service.py - MongoDB queries and
+aggregation -> app/repositories/coversation_repository.py - All
+conversation routes currently use hardcoded user_id=4; replace with
+JWT-authenticated user ID before production.
 
-Alembic migrations
-- Configuration -> alembic/env.py
-- Migration config -> alembic.ini
-- Migration files -> alembic/versions/
-- Models imported into Alembic metadata -> alembic/env.py
-- Autogenerate -> alembic revision --autogenerate
-- Apply -> alembic upgrade head
+Query operations - find/find_one -> retrieval - insert_one -> create -
+update_one + $set -> title updates - update_one + $push -> append
+message - delete_one -> delete - find projection excludes messages from
+conversation-list results - sort + skip + limit -> paginated list -
+search_by_user uses escaped case-insensitive title regex - Aggregation
+pipeline -> $match, $unwind, $group, $project, $sort - Aggregation
+counts messages by role for a user.
 
+Indexes and explain - Inspect index: db.conversations.getIndexes() -
+Inspect execution: db.conversations.find({user_id: 4}).sort({updated_at:
+-1, _id: -1}).explain(“executionStats”) - queryPlanner -> selected plan
+details - executionStats -> winning plan execution statistics -
+allPlansExecution -> candidate-plan trial details - IXSCAN -> index
+scan; COLLSCAN -> collection scan - nReturned -> result count -
+totalKeysExamined -> index keys examined - totalDocsExamined ->
+documents examined - Do not assume an index is used just because it
+exists; inspect winningPlan. - COLLSCAN is not automatically bad for
+tiny collections or queries returning most documents.
 
-AUTH / SECURITY — WHAT WE COVERED
----------------------------------
+Atomicity / modeling trade-offs - Single-document updates are atomic. -
+$push is suitable for appending embedded messages; avoid
+read-modify-replace for concurrent appends. - BSON document maximum size
+is 16 MiB; long histories may need a separate messages collection. -
+Embed messages when they are bounded and usually read with their
+conversation; use a separate collection when histories grow large or
+need independent pagination/indexing. - Multi-document transactions
+require suitable MongoDB deployment configuration (commonly a replica
+set).
 
-Password hashing
-- Argon2 PasswordHasher -> app/core/security.py
+KNOWN ISSUES TO FIX BEFORE PUSH
 
-JWT
-- Access token creation -> app/core/security.py
-- Refresh token creation -> app/core/security.py
-- JWT settings -> app/core/config.py
+1.  app/repositories/coversation_repository.py -> add_message()
+    -   Current $set for updated_at incorrectly contains a $gte query
+        expression.
+    -   Current code calls .sort() on the result of update_one(), which
+        is not a cursor.
+    -   Correct behavior: use “$set”: {“updated_at”: now} and return
+        update_one(…) directly; remove .sort(…).
+2.  app/main.py -> /db-health
+    -   It references engine, but “from app.db.database import engine”
+        is commented out.
+    -   Import engine (the Base.metadata.create_all() call can remain
+        commented out).
+3.  app/services/conversation_service.py
+    -   list_conversations() is defined twice; remove the earlier
+        one-argument duplicate and keep the version with limit/offset.
+    -   get_messages() catches Exception and checks InvalidId afterward;
+        prefer “except InvalidId” directly, matching add_message().
+4.  app/api/conversations.py
+    -   All endpoints hardcode user_id=4. This is a temporary
+        local-learning shortcut, not production-ready authentication.
+    -   Aggregation route exists; ensure it appears before dynamic
+        routes if route paths are ever changed to overlap.
+5.  Uploaded snapshot’s Redis integration
+    -   Redis is not yet represented in requirements.txt,
+        app/core/config.py, .env settings, app/db/, or app/main.py in
+        this snapshot.
+    -   After implementing Redis integration, add redis to
+        requirements.txt, REDIS_URL to local .env (never commit .env), a
+        reusable client module, and a health check; verify with
+        redis-cli ping and the FastAPI health endpoint.
 
-Authentication
-- Login/auth flow -> app/api/auth.py + app/services/auth_service.py
-- Authentication dependency -> app/core/authentication.py
+QUICK “WHERE DO I LOOK?”
 
-Authorization
-- Role/permission checks -> app/core/authorization.py
+Need to change a table/column? -> app/models/ Need to add a PostgreSQL
+index? -> app/models/
+.py Need a composite SQL index? -> app/models/
+.py -> table_args Need a PostgreSQL query? -> app/repositories/ Need
+business logic? -> app/services/ Need an API endpoint? -> app/api/ Need
+request/response fields? -> app/schemas/ Need transaction/rollback? ->
+app/services/order_service.py Need row locking? ->
+app/services/order_service.py -> with_for_update() Need SQLAlchemy
+engine/pool? -> app/db/database.py Need DB session? -> app/db/session.py
+Need migration? -> alembic/versions/ Need Alembic metadata/config? ->
+alembic/env.py Need MongoDB connection/index? -> app/db/mongodb.py Need
+MongoDB conversation query? ->
+app/repositories/coversation_repository.py Need MongoDB business
+logic/ownership? -> app/services/conversation_service.py Need MongoDB
+route? -> app/api/conversations.py Need MongoDB request/response schema?
+-> app/schemas/conversation.py Need MongoDB query plan? -> mongosh ->
+explain(“executionStats”) Need password hashing/JWT? ->
+app/core/security.py Need authentication? -> app/core/authentication.py
+Need authorization? -> app/core/authorization.py Need environment/config
+values? -> .env + app/core/config.py
 
-Request/response validation
-- Pydantic schemas -> app/schemas/
-
-FastAPI dependency injection
-- Depends(...) -> app/api/ and app/core/
-
-
-QUICK "WHERE DO I LOOK?"
-------------------------
-
-Need to change a table/column?
--> app/models/
-
-Need to add an index?
--> app/models/<table>.py
-
-Need a composite index?
--> app/models/<table>.py -> __table_args__
-
-Need a DB query?
--> app/repositories/
-
-Need business logic?
--> app/services/
-
-Need an API endpoint?
--> app/api/
-
-Need request/response fields?
--> app/schemas/
-
-Need transaction/rollback?
--> app/services/order_service.py
-
-Need row locking?
--> app/services/order_service.py -> with_for_update()
-
-Need SQLAlchemy engine/pool?
--> app/db/database.py
-
-Need DB session?
--> app/db/session.py
-
-Need migration?
--> alembic/versions/
-
-Need Alembic model metadata/config?
--> alembic/env.py
-
-Need environment/config values?
--> .env + app/core/config.py
-
-Need password hashing/JWT?
--> app/core/security.py
-
-Need authentication?
--> app/core/authentication.py
-
-Need authorization?
--> app/core/authorization.py
-
-Need to inspect actual PostgreSQL tables?
--> psql -> \dt / \d table_name
-
-Need to inspect indexes?
--> psql -> \di
-
-Need query performance?
--> EXPLAIN ANALYZE in psql
-
-
-END OF CURRENT NOTES
+END OF NOTES
