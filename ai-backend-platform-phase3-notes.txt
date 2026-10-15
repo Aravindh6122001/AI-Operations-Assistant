@@ -101,8 +101,7 @@ checks
 
 .env (local only; do not commit) - DATABASE_URL - MONGODB_URL -
 MONGODB_DATABASE - JWT_SECRET_KEY - JWT_ALGORITHM -
-ACCESS_TOKEN_EXPIRE_MINUTES - REFRESH_TOKEN_EXPIRE_DAYS - REDIS_URL is
-not present in the reviewed snapshot yet
+ACCESS_TOKEN_EXPIRE_MINUTES - REFRESH_TOKEN_EXPIRE_DAYS - REDIS_URL is present in the current implementation; see the detailed Redis section below
 
 POSTGRESQL / SQL — TOPICS COVERED
 
@@ -137,7 +136,7 @@ execution plan; inspect Seq Scan / Index Scan
 Filtering, sorting, pagination - SQLAlchemy .filter(…) ->
 app/repositories/ - Query parameters -> app/api/ + service/repository
 layer - SQLAlchemy .order_by(…) -> repository query;
-e.g. Order.id.desc() - limit()/offset() -> repository/service query -
+e.g. Order.id.desc() - limit()/offset() -> repository/service query -
 API query parameters -> app/api/
 
 Aggregation and data integrity - SQL COUNT/SUM/AVG/GROUP BY ->
@@ -282,3 +281,413 @@ Need authorization? -> app/core/authorization.py Need environment/config
 values? -> .env + app/core/config.py
 
 END OF NOTES
+
+================================================================================
+REDIS — DETAILED IMPLEMENTATION AND LEARNING NOTES
+================================================================================
+
+CURRENT STATUS
+- Redis fundamentals and the planned Batch 1–4 learning track are covered.
+- Redis is integrated into the FastAPI project for product cache-aside behavior
+  and a rate-limiting test endpoint.
+- Remaining optional/advanced topics for a later session: Redis Streams,
+  Redis Pub/Sub, Redis Cluster, and deeper distributed-lock designs.
+- Do not treat those advanced topics as blockers for completing the current
+  Redis integration.
+- These notes describe the implementation discussed during the learning
+  session. Confirm exact current code against the local working tree if files
+  have changed since then.
+
+1. REDIS LOCAL COMMANDS
+- Start Redis on macOS:
+    brew services start redis
+- Check server:
+    redis-cli ping
+  Expected:
+    PONG
+- Open CLI:
+    redis-cli
+- Store and read:
+    SET demo "hello"
+    GET demo
+- Set an expiry:
+    SET demo "hello" EX 60
+- Check remaining TTL:
+    TTL demo
+- Increment a counter atomically:
+    INCR request_count
+- Delete a key:
+    DEL demo
+- Inspect memory:
+    INFO memory
+- Inspect persistence:
+    INFO persistence
+- Inspect snapshot configuration:
+    CONFIG GET save
+- Inspect AOF configuration:
+    CONFIG GET appendonly
+- Inspect memory limit and eviction policy:
+    CONFIG GET maxmemory
+    CONFIG GET maxmemory-policy
+- Scan keys safely:
+    SCAN 0 MATCH "ai-backend:*" COUNT 100
+  Avoid KEYS * in production because it can block Redis while scanning a
+  large keyspace.
+
+2. PROJECT CONFIGURATION AND CONNECTION
+- Package:
+    pip install redis
+- Save installed dependencies:
+    pip freeze > requirements.txt
+- Local .env setting:
+    REDIS_URL=redis://localhost:6379/0
+- Never commit .env or credentials.
+- app/core/config.py:
+  - Settings reads REDIS_URL.
+  - Example default:
+      REDIS_URL: str = "redis://localhost:6379/0"
+  - Keep a single model_config definition in the Settings class.
+- app/db/redis.py:
+  - Create one reusable redis.Redis client using redis.Redis.from_url().
+  - decode_responses=True makes returned strings text rather than bytes.
+  - Example configuration:
+      redis_client = redis.Redis.from_url(
+          settings.REDIS_URL,
+          decode_responses=True,
+          max_connections=50,
+          socket_connect_timeout=2,
+          socket_timeout=2,
+          health_check_interval=30,
+      )
+  - The pool limit and timeouts are example starting values and should be
+    tuned for deployment traffic.
+  - Reuse a client per application process; do not create a new Redis client
+    on every request.
+- app/main.py:
+  - /redis-health pings Redis and returns a healthy response when reachable.
+  - If Redis raises redis.RedisError, the health endpoint returns HTTP 503.
+- Verify the actual current files and imports before pushing.
+
+3. CACHE-ASIDE PATTERN
+- Current use case: cache product reads while PostgreSQL remains the source
+  of truth.
+- General request flow:
+    Client
+      -> app/api/product.py
+      -> app/services/product_service.py
+      -> Redis cache lookup
+      -> on cache miss, app/repositories/product_repository.py
+      -> PostgreSQL
+      -> write response to Redis
+      -> return response
+- Repository layer performs database queries. The service coordinates Redis,
+  repository calls, business logic, and cache invalidation.
+- Cache-aside sequence:
+  1. Build the cache key.
+  2. Try Redis GET.
+  3. If valid cached data exists, deserialize it and return.
+  4. If the key is missing, expired, or malformed, query PostgreSQL.
+  5. Convert the ORM object into the Pydantic response schema.
+  6. Serialize the response and write it to Redis with a TTL.
+- Example individual product key:
+    ai-backend:product:{product_id}
+- Example product-list key:
+    ai-backend:products:all
+- TTL discussed for product cache:
+    300 seconds (5 minutes)
+- These names and TTLs must match the current source code if they have been
+  changed locally.
+
+4. PYDANTIC, ORM OBJECTS, PYTHON DICTS, AND JSON
+- SQLAlchemy ORM object:
+  - A Python object mapped to a database row.
+  - Fields can usually be read using attributes, such as product.name.
+- Python dictionary:
+  - A mapping accessed using keys, such as product["name"].
+- Pydantic model:
+  - Validates fields and represents the API response shape.
+  - ProductResponse.model_validate(product) constructs/validates a Pydantic
+    response from an ORM object when from_attributes=True is configured.
+- Serialization:
+    response.model_dump_json()
+  - Produces a JSON string suitable for storing in Redis.
+- Deserialization:
+    ProductResponse.model_validate_json(cached_product)
+  - Parses the JSON and reconstructs a validated Pydantic response model.
+- For a list of responses, TypeAdapter(list[ProductResponse]) can validate
+  JSON or serialize a list using the matching Pydantic version.
+- If a cached value is invalid or cannot be parsed, delete that key and
+  fall back to PostgreSQL rather than returning malformed data.
+- Handle only expected serialization/validation errors; avoid swallowing
+  arbitrary exceptions.
+
+5. CACHE INVALIDATION ON CREATE, UPDATE, AND DELETE
+- When a product is created:
+  - Commit the PostgreSQL transaction successfully.
+  - Invalidate the cached product-list key.
+- When a product is updated:
+  - Commit the database change successfully.
+  - Invalidate the individual product key and the product-list key.
+- When a product is deleted:
+  - Invalidate relevant cache keys only after successful deletion.
+  - If the database rejects the deletion, do not pretend the deletion
+    succeeded or invalidate the cache as though it did.
+- A Redis invalidation failure should be logged. It should not report the
+  already-committed PostgreSQL update as though the database operation failed.
+  However, stale data may remain until its TTL expires, so this is a
+  trade-off rather than perfect consistency.
+- A concurrent request can read an old database value and repopulate the
+  cache after invalidation. TTL limits the duration of stale data but does
+  not fully eliminate this race.
+
+6. PRODUCT DELETE AND FOREIGN-KEY INTEGRITY
+- A product referenced by order_items cannot be deleted if the foreign key
+  restricts deletion.
+- Example error:
+    order_items_product_id_fkey
+- PostgreSQL protects order history from being left with dangling references.
+- API should return HTTP 409 Conflict for a known foreign-key conflict,
+  after rolling back the SQLAlchemy session.
+- Do not use cascade deletion merely to bypass this error: deleting historical
+  order items may be incorrect for an ordering system.
+- Soft deletion (for example, an is_active field) is often more appropriate
+  when products need to be hidden while historical orders must be preserved.
+- A SQLAlchemy IntegrityError handler should only return the intended 409
+  for a recognized integrity conflict; unrelated database failures should
+  not be mislabeled.
+
+7. CACHE FAILURE POLICY
+- Product cache:
+  - Prefer fail-open behavior for cache operations: if Redis GET fails, try
+    PostgreSQL; if a cache SET or DEL fails, log the issue and preserve the
+    result of a successful database operation.
+  - Protect PostgreSQL against sudden load increases if Redis is unavailable.
+- Rate limiter:
+  - The implementation discussed uses fail-closed behavior: if Redis is
+    unavailable, return HTTP 503 because the request limit cannot be checked.
+  - This is a policy choice, not a universal rule. Some systems choose
+    fail-open behavior to preserve availability.
+- Use redis.RedisError for expected Redis-client failures. Avoid broad
+  except Exception blocks that hide programming errors.
+- A health check can report Redis availability, but a health endpoint alone
+  does not implement fallback behavior for product requests.
+
+8. RATE LIMITING IMPLEMENTATION
+- Example endpoint:
+    GET /rate-limit-test
+- The endpoint uses FastAPI Depends(rate_limit).
+- Example policy:
+    10 requests per client IP per 60-second fixed window.
+- Example Redis key shape:
+    rate-limit:{client_ip}:{window_id}
+- Fixed-window counter:
+  - window_id = int(current_time) // WINDOW_SECONDS
+  - increment a counter for that client and window.
+  - first increment sets an expiry.
+  - reject requests when count > RATE_LIMIT.
+- Expected response:
+  - Requests within the limit: normal endpoint response, typically HTTP 200.
+  - Requests beyond the limit: HTTP 429 Too Many Requests.
+  - A Retry-After response header tells the client how long to wait.
+  - Redis unavailable: HTTP 503 in the fail-closed example.
+- Lua script:
+  - INCR and initial EXPIRE run atomically together.
+  - This avoids the race where the counter increments but a separate expiry
+    operation is skipped or interleaved.
+- Fixed-window limitation:
+  - A client can make the full limit near the end of one window and another
+    full limit just after the next window begins.
+  - Sliding-window or token-bucket algorithms smooth this behavior.
+- Proxy caveat:
+  - request.client.host may identify a reverse proxy rather than the real
+    client when deployed behind a proxy.
+  - Trust forwarded IP headers only when they are set by a trusted proxy.
+  - Never trust arbitrary client-supplied forwarded headers.
+
+9. ATOMIC OPERATIONS AND RACE CONDITIONS
+- Redis commands such as INCR, DECR, INCRBY, and HINCRBY are atomic.
+- Unsafe read-modify-write example:
+    GET counter
+    increment in Python
+    SET counter
+  Two concurrent requests can both read the same old value and overwrite
+  one another, losing an increment.
+- Safer:
+    INCR counter
+- A sequence of commands is not automatically atomic just because each
+  individual command is atomic.
+- Use Lua scripts or transactions where a group of operations must execute
+  together.
+- The rate limiter's increment-plus-first-expiry logic is one example.
+
+10. CONNECTION POOLING AND TIMEOUTS
+- Reuse the Redis client and its connection pool.
+- max_connections limits pooled connections per client pool.
+- socket_connect_timeout limits time spent establishing a connection.
+- socket_timeout limits socket operation wait time.
+- health_check_interval enables periodic checks on reused connections.
+- Tune these values based on request latency, traffic, worker count, and
+  Redis server capacity.
+- Multiple Uvicorn worker processes generally have separate client pools;
+  max_connections is not necessarily a single global limit for all workers.
+
+11. CACHE STAMPEDE AND TTL JITTER
+- Cache stampede:
+  - A hot cache key expires or is missing.
+  - Many simultaneous requests all miss the same key.
+  - Each request queries PostgreSQL and may try to populate the same key.
+  - This can create unnecessary database load.
+- TTL jitter:
+  - Add a small random variation to TTLs so many different keys do not
+    expire at the same moment.
+  - Example:
+      base_ttl = 300
+      jitter = random.randint(0, 60)
+      redis_client.set(cache_key, value, ex=base_ttl + jitter)
+  - This makes TTLs range from 300 to 360 seconds.
+  - Jitter helps spread expirations across many keys; it does not prevent
+    100 requests for the same key from stampeding after that key expires.
+  - Jitter can also be chosen around the base TTL, as long as the resulting
+    TTL stays within the data-freshness requirements.
+- Per-key lock / request coalescing:
+  - One request obtains a lock for the specific cache key and rebuilds it.
+  - Other requests wait briefly and retry the cache, serve acceptable stale
+    data, or use a bounded fallback.
+  - Locks must have a finite expiry and safe release logic.
+  - Use a unique token and atomic compare-and-delete to prevent one request
+    from deleting a lock owned by another request.
+  - Lock expiry is a safety net; it does not guarantee the owner has finished.
+  - Locks should be per cache key: product 6 and product 7 should not block
+    each other.
+  - Cache keys must include relevant filters/parameters so different
+    responses are not accidentally treated as the same cache entry.
+- A distributed lock is an advanced implementation detail; do not add one
+  to every cache read without a demonstrated need.
+
+12. IDEMPOTENCY AND TEMPORARY STATE
+- Idempotency helps prevent duplicate business operations when clients retry
+  after a timeout or lost response.
+- Example atomic claim:
+    SET idempotency:{request_id} processing NX EX 300
+- If SET returns success, the request ID was claimed.
+- If SET returns no value, the ID already exists; do not blindly assume the
+  original operation succeeded.
+- The application must distinguish in-progress, completed, and failed states.
+- Store/retrieve the result for completed requests and define recovery for
+  requests that crash midway.
+- For order creation, enforce uniqueness in PostgreSQL too. Redis alone does
+  not guarantee exactly-once database effects across crashes.
+- Other temporary-state examples:
+  - password-reset or verification codes
+  - short-lived workflow state
+  - session data when Redis is deliberately used as the session store
+- Verification codes should be generated securely, expire, have attempt
+  limits, avoid secret logging, and be consumed atomically where required.
+
+13. PERSISTENCE: RDB AND AOF
+- RDB:
+  - Saves point-in-time snapshots at configured intervals.
+  - Useful for backups and recovery.
+  - Changes since the latest usable snapshot may be lost after a failure.
+- AOF:
+  - Records write operations for replay during recovery.
+  - Durability depends on the configured fsync policy.
+  - Can use additional disk space and introduce write/persistence overhead.
+- Redis can be configured with RDB, AOF, both, or neither.
+- Product cache:
+  - Usually rebuildable from PostgreSQL; persistence is not required solely
+    to preserve cached product entries.
+- Important state:
+  - Decide durability requirements explicitly.
+  - Persistence does not replace database constraints, transactions, or
+    application recovery logic.
+- Inspect current local configuration:
+    redis-cli INFO persistence
+    redis-cli CONFIG GET save
+    redis-cli CONFIG GET appendonly
+
+14. MEMORY MANAGEMENT AND EVICTION
+- Inspect memory:
+    redis-cli INFO memory
+- Inspect maxmemory:
+    redis-cli CONFIG GET maxmemory
+- Inspect eviction policy:
+    redis-cli CONFIG GET maxmemory-policy
+- Common policies:
+  - noeviction: writes that need extra memory can fail when maxmemory is hit.
+  - allkeys-lru: evict least-recently-used keys across the keyspace.
+  - allkeys-lfu: evict least-frequently-used keys across the keyspace.
+  - volatile-lru: evict least-recently-used keys that have TTLs.
+  - volatile-ttl: evict eligible keys with the shortest remaining TTL.
+- allkeys-lru is a common starting point for a cache-only instance, not an
+  automatic choice for an instance that also stores rate-limit counters or
+  idempotency records.
+- Consider separating cache workloads from state whose early eviction would
+  weaken security or correctness.
+- Expiration and eviction are different:
+  - expiration removes a key after its TTL runs out.
+  - eviction removes keys to make room under memory pressure.
+
+15. REDIS TESTING CHECKLIST
+- Check Redis server:
+    redis-cli ping
+- Check /redis-health in FastAPI.
+- Product cache:
+  - Call GET /products/{id} twice.
+  - Inspect ai-backend:product:{id}.
+  - Confirm TTL is positive.
+  - Call GET /products/ and inspect ai-backend:products:all.
+- Invalidation:
+  - Update a product and verify its key and list key are invalidated.
+  - Delete a product successfully, if it has no referencing order items,
+    and verify relevant keys are invalidated.
+  - If a foreign-key constraint rejects deletion, verify HTTP 409 and that
+    the database session was rolled back.
+- Rate limiter:
+  - Send 12 requests within one window when the counter starts at zero.
+  - Expect 10 allowed and the next 2 rejected for a limit of 10.
+  - Inspect rate-limit:* keys and their TTLs.
+- TTL:
+    SET test:expiry hello EX 5
+    GET test:expiry
+    TTL test:expiry
+  - After expiry, GET returns nil and TTL returns -2.
+  - TTL -1 means the key exists without an expiry.
+- Atomicity:
+  - Run concurrent INCR operations and confirm the final value matches
+    the number of successful increments.
+- Failure handling:
+  - In local development only, stop Redis and verify health/rate-limit
+    behavior and product-cache fallback.
+  - Restart Redis and verify recovery.
+- Avoid testing by stopping a shared or production Redis instance.
+
+16. OPTIONAL ADVANCED TOPICS FOR A LATER SESSION
+- Redis Streams:
+  - Persistent stream entries, consumer groups, acknowledgements, and
+    processing workflows.
+- Redis Pub/Sub:
+  - Lightweight real-time message broadcasting; disconnected subscribers
+    can miss messages.
+- Redis Cluster:
+  - Distributes keys across nodes for horizontal scale and availability.
+- More advanced topics:
+  - sliding-window/token-bucket rate limiting
+  - distributed lock guarantees and failure modes
+  - cache versioning and stronger invalidation coordination
+  - operational monitoring and capacity planning
+- These topics are intentionally deferred and are not blockers for the
+  current Redis learning track.
+
+17. QUICK "WHERE DO I LOOK?" — REDIS
+- Redis configuration -> .env + app/core/config.py
+- Redis client/pool -> app/db/redis.py
+- Redis health check -> app/main.py
+- Rate-limiter dependency -> app/core/rate_limiter.py
+- Product cache logic -> app/services/product_service.py
+- Product API -> app/api/product.py
+- Product database queries -> app/repositories/product_repository.py
+- Product response schemas -> app/schemas/products.py
+- Dependency list -> requirements.txt
+
+END OF REDIS NOTES

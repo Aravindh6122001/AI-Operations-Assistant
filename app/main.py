@@ -1,10 +1,15 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request , HTTPException , Depends
+
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 # database
 from sqlalchemy import text
 # from app.db.database import Base, engine
+
+#redis
+import redis
+from app.db.redis import redis_client
 
 # Models must be imported before create_all()
 from app.models.user import User
@@ -16,17 +21,24 @@ from app.models.product import Product
 from app.api.auth import router as auth_router
 from app.api.users import router as users_router
 from app.api.orders import router as orders_router
-from app.api.product import router as products_router
+from app.api.product import router as product_router
 from app.api.conversations import router as conversations_router
 
 from app.db.mongodb import ensure_mongodb_indexes
 from app.db.database import engine
 
-
+from app.core.rate_limiter import rate_limit
 
 app = FastAPI(
     title="AI Backend Platform"
 )
+
+@app.get(
+    "/rate-limit-test",
+    dependencies=[Depends(rate_limit)],
+)
+def rate_limit_test():
+    return {"message": "Request allowed"}
 
 
 # Temporary until Alembic is introduced in Phase 3
@@ -36,7 +48,7 @@ app = FastAPI(
 app.include_router(auth_router)
 app.include_router(users_router, prefix="/api/v1")
 app.include_router(orders_router)
-app.include_router(products_router)
+app.include_router(product_router)
 app.include_router(conversations_router)
 
 
@@ -57,7 +69,6 @@ def health():
     return {
         "status": "ok"
     }
-
 
 @app.get("/db-health")
 def db_health():
@@ -88,4 +99,16 @@ async def global_exception_handler(
         content={
             "detail": str(exc)
         }
-    )    
+    ) 
+
+
+@app.get("/redis-health")
+def redis_health():
+    try:
+        redis_client.ping()
+        return {"redis": "connected"}
+    except redis.RedisError:
+        raise HTTPException(
+            status_code=503,
+            detail="Redis unavailable",
+        )       
